@@ -76,13 +76,15 @@
   var STATUS_CYCLE = ['not_started','in_progress','in_qa','ready_for_launch'];
   var STATUS_LABEL = {not_started:'Not started', in_progress:'In progress', in_qa:'In QA', ready_for_launch:'Ready for launch'};
   var WORK_HOURS_PER_DAY = 6;
+  var LEGACY_NAME_FIX = {c1:'Contract 1', c2:'Contract 2', c3:'Contract 3', c4:'Contract 4'};
+  var NEW_NAME = {c1:'Contract A', c2:'Contract B', c3:'Contract C', c4:'Contract D'};
 
   var defaultData = {
     tabs: [
-      {id:'c1', name:'Contract 1', items:[]},
-      {id:'c2', name:'Contract 2', items:[]},
-      {id:'c3', name:'Contract 3', items:[]},
-      {id:'c4', name:'Contract 4', items:[]},
+      {id:'c1', name:'Contract A', items:[]},
+      {id:'c2', name:'Contract B', items:[]},
+      {id:'c3', name:'Contract C', items:[]},
+      {id:'c4', name:'Contract D', items:[]},
       {id:'personal', name:'Personal', items:[]}
     ],
     active: 'overview',
@@ -128,6 +130,9 @@
     }catch(e){ data = JSON.parse(JSON.stringify(defaultData)); }
     if(!data.overviewMode) data.overviewMode = 'rolling';
     if(!data.selectedDay) data.selectedDay = todayISO();
+    data.tabs.forEach(function(t){
+      if(LEGACY_NAME_FIX[t.id] && t.name === LEGACY_NAME_FIX[t.id]) t.name = NEW_NAME[t.id];
+    });
     render();
   }
   function save(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }catch(e){} }
@@ -230,58 +235,92 @@
     });
   }
   function escapeHtml(s){ var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function escapeRegex(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-  function parseQuickAdd(raw){
-    var pipeParts = raw.split('|');
-    var mainRaw = pipeParts[0];
-    var notes = pipeParts.slice(1).join('|').trim();
-    var text = ' ' + mainRaw.trim() + ' ';
-    var result = {tag:null, type:null, date:null, startTime:null, estimateMinutes:null, priority:'medium', notes: notes};
-    var tagMatch = text.match(/#(\w+)/i);
-    if(tagMatch){
-      var tval = tagMatch[1].toLowerCase();
-      var found = data.tabs.find(function(t){ return t.id === tval || t.name.toLowerCase().replace(/\s+/g,'') === tval; });
-      if(found){ result.tag = found.id; text = text.replace(tagMatch[0], ' '); }
+  function classifySegment(seg){
+    var s = seg.trim();
+    if(!s) return null;
+    var lower = s.toLowerCase();
+
+    for(var ti=0; ti<data.tabs.length; ti++){
+      var tab = data.tabs[ti];
+      if(lower === tab.name.toLowerCase() || lower.indexOf(tab.name.toLowerCase()) !== -1) return {kind:'tag', value: tab.id};
     }
-    var prMatch = text.match(/\b(high|medium|low)\b/i);
-    if(prMatch){ result.priority = prMatch[1].toLowerCase(); text = text.replace(prMatch[0], ' '); }
-    var typeMatch = text.match(/\b(meeting|task|reminder|project)\b/i);
-    if(typeMatch){ result.type = typeMatch[1].toLowerCase(); text = text.replace(typeMatch[0], ' '); }
-    var durMatch = text.match(/\b(\d+(\.\d+)?)\s*h(ours?)?\b/i);
-    if(durMatch){ result.estimateMinutes = Math.round(parseFloat(durMatch[1])*60); text = text.replace(durMatch[0], ' '); }
-    else {
-      var durM = text.match(/\b(\d+)\s*m(in(utes?)?)?\b/i);
-      if(durM){ result.estimateMinutes = parseInt(durM[1]); text = text.replace(durM[0], ' '); }
+    if(lower === 'personal'){ var p = data.tabs.find(function(t){return t.id==='personal';}); if(p) return {kind:'tag', value:'personal'}; }
+
+    var typeMatch = lower.match(/\b(meeting|task|reminder|project)\b/);
+    if(typeMatch && lower.replace(typeMatch[0],'').trim() === '') return {kind:'type', value: typeMatch[1]};
+
+    if(/^notes?\b/.test(lower)){
+      var noteText = s.replace(/^notes?\s*[:\-]?\s*/i, '');
+      return {kind:'notes', value: noteText};
     }
-    var timeMatch = text.match(/\b(\d{1,2})(:(\d{2}))?\s*(am|pm)\b/i);
-    if(timeMatch){
-      var h = parseInt(timeMatch[1]); var m = timeMatch[3] ? parseInt(timeMatch[3]) : 0;
-      var ap = timeMatch[4].toLowerCase();
-      if(ap === 'pm' && h !== 12) h += 12; if(ap === 'am' && h === 12) h = 0;
-      result.startTime = pad(h) + ':' + pad(m);
-      text = text.replace(timeMatch[0], ' ');
-    }
+
+    if(/\btoday\b/.test(lower)) return {kind:'date', value: todayISO()};
+    if(/\btomorrow\b/.test(lower)) return {kind:'date', value: toISO(addDays(new Date(),1))};
     var dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-    var lower = text.toLowerCase();
-    if(/\btoday\b/.test(lower)){ result.date = todayISO(); text = text.replace(/\btoday\b/i, ' '); }
-    else if(/\btomorrow\b/.test(lower)){ result.date = toISO(addDays(new Date(),1)); text = text.replace(/\btomorrow\b/i, ' '); }
-    else {
-      for(var i=0;i<dayNames.length;i++){
-        var re = new RegExp('\\b(due\\s+)?' + dayNames[i] + '\\b', 'i');
-        var m2 = text.match(re);
-        if(m2){
-          var now = new Date(); var targetDow = i; var curDow = now.getDay();
-          var diff = (targetDow - curDow + 7) % 7; if(diff === 0) diff = 7;
-          result.date = toISO(addDays(now, diff));
-          text = text.replace(m2[0], ' ');
-          break;
-        }
+    for(var i=0;i<dayNames.length;i++){
+      if(new RegExp('\\b' + dayNames[i] + '\\b').test(lower)){
+        var now = new Date(); var diff = (i - now.getDay() + 7) % 7; if(diff === 0) diff = 7;
+        return {kind:'date', value: toISO(addDays(now, diff))};
       }
     }
-    text = text.replace(/\bdue\b/i, ' ');
+
+    var timeMatch = lower.match(/^\s*(\d{1,2})(:(\d{2}))?\s*(am|pm)\s*$/);
+    if(timeMatch){
+      var h = parseInt(timeMatch[1]); var m = timeMatch[3] ? parseInt(timeMatch[3]) : 0;
+      var ap = timeMatch[4];
+      if(ap === 'pm' && h !== 12) h += 12; if(ap === 'am' && h === 12) h = 0;
+      return {kind:'time', value: pad(h) + ':' + pad(m)};
+    }
+
+    var durMatch = lower.match(/^\s*(\d+(\.\d+)?)\s*h(ours?)?\s*$/);
+    if(durMatch) return {kind:'duration', value: Math.round(parseFloat(durMatch[1])*60)};
+    var durM = lower.match(/^\s*(\d+)\s*m(in(utes?)?)?\s*$/);
+    if(durM) return {kind:'duration', value: parseInt(durM[1])};
+
+    if(/^(high|medium|low)$/.test(lower)) return {kind:'priority', value: lower};
+
+    if(/^due$/.test(lower)) return null;
+    return {kind:'title', value: s.replace(/^due\s+/i,'')};
+  }
+
+  function parseQuickAdd(raw){
+    var segments = raw.split(',');
+    var result = {tag:null, type:null, date:null, startTime:null, estimateMinutes:null, priority:'medium', notes:'', title:''};
+    var titleParts = [];
+    var notesParts = [];
+    var notesStarted = false;
+    segments.forEach(function(seg){
+      var c = classifySegment(seg);
+      if(!c) return;
+      if(notesStarted){ notesParts.push(c.kind === 'notes' ? c.value : seg.trim()); return; }
+      if(c.kind === 'tag') result.tag = c.value;
+      else if(c.kind === 'type') result.type = c.value;
+      else if(c.kind === 'date') result.date = c.value;
+      else if(c.kind === 'time') result.startTime = c.value;
+      else if(c.kind === 'duration') result.estimateMinutes = c.value;
+      else if(c.kind === 'priority') result.priority = c.value;
+      else if(c.kind === 'notes'){ notesStarted = true; if(c.value) notesParts.push(c.value); }
+      else if(c.kind === 'title') titleParts.push(c.value);
+    });
+    result.title = titleParts.join(', ').trim();
+    result.notes = notesParts.join(', ').trim();
     if(!result.type) result.type = result.startTime ? 'meeting' : 'task';
-    result.title = text.replace(/\s+/g,' ').trim();
     return result;
+  }
+
+  var TEMPLATE_LINE = 'Contract A/B/C/D or Personal, Title, due <day>, <time \u2014 meetings only>, <hours>h, priority, notes <text>';
+  var TEMPLATE_EXAMPLE = 'e.g. "Contract B, Client kickoff call, due tomorrow, 10am, 30m, high, notes bring the deck"';
+
+  function buildQuickAddHint(){
+    var box = document.createElement('div');
+    box.style.cssText = 'font-size:11px; color:var(--text-muted); margin:6px 0 0; line-height:1.5;';
+    var l1 = document.createElement('p'); l1.style.margin = '0'; l1.textContent = 'Format: ' + TEMPLATE_LINE;
+    var l2 = document.createElement('p'); l2.style.margin = '0'; l2.textContent = TEMPLATE_EXAMPLE;
+    var l3 = document.createElement('p'); l3.style.margin = '0'; l3.textContent = 'Every field is optional except the title. Include a time and it becomes a meeting automatically. Say "comma" between fields when using voice dictation.';
+    box.appendChild(l1); box.appendChild(l2); box.appendChild(l3);
+    return box;
   }
 
   function buildOverview(){
@@ -293,7 +332,7 @@
     qaRow.style.cssText = 'display:flex; gap:8px;';
     var qaInput = document.createElement('input');
     qaInput.type = 'text';
-    qaInput.placeholder = '#c2 Draft Q4 deck due fri 1.5h high | client wants bold colors';
+    qaInput.placeholder = 'Contract B, Client kickoff call, due tomorrow, 10am, 30m, high';
     qaInput.style.cssText = 'flex:1;';
     var qaBtn = document.createElement('button');
     qaBtn.textContent = '+ Add';
@@ -317,11 +356,7 @@
     qaInput.addEventListener('keydown', function(e){ if(e.key === 'Enter') submitQuick(); });
     qaRow.appendChild(qaInput); qaRow.appendChild(qaBtn);
     qaCard.appendChild(qaRow); qaCard.appendChild(qaErr);
-    var qaHint = document.createElement('p');
-    qaHint.className = 'muted';
-    qaHint.style.cssText = 'font-size:11px; margin:6px 0 0;';
-    qaHint.textContent = '#tag title, due <day>, <time for meetings>, Nh, priority | notes';
-    qaCard.appendChild(qaHint);
+    qaCard.appendChild(buildQuickAddHint());
     wrap.appendChild(qaCard);
 
     var soonEnd = toISO(addDays(new Date(),3));
@@ -585,7 +620,7 @@
     var qaRow = document.createElement('div');
     qaRow.style.cssText = 'display:flex; gap:8px;';
     var qaInput = document.createElement('input');
-    qaInput.type = 'text'; qaInput.placeholder = 'Draft Q4 deck due fri 1.5h high | client wants bold colors';
+    qaInput.type = 'text'; qaInput.placeholder = 'Client kickoff call, due tomorrow, 10am, 30m, high';
     qaInput.style.cssText = 'flex:1;';
     var qaBtn = document.createElement('button');
     qaBtn.textContent = '+ Add';
@@ -603,11 +638,7 @@
     qaInput.addEventListener('keydown', function(e){ if(e.key === 'Enter') qaBtn.onclick(); });
     qaRow.appendChild(qaInput); qaRow.appendChild(qaBtn);
     qaCard.appendChild(qaRow);
-    var qaHint = document.createElement('p');
-    qaHint.className = 'muted';
-    qaHint.style.cssText = 'font-size:11px; margin:6px 0 0;';
-    qaHint.textContent = 'title, due <day>, <time for meetings>, Nh, priority | notes';
-    qaCard.appendChild(qaHint);
+    qaCard.appendChild(buildQuickAddHint());
     wrap.appendChild(qaCard);
 
     var detailsToggle = document.createElement('button');
