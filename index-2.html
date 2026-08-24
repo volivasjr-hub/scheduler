@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Contract Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #FAF6F0;
+    --surface: #FFFFFF;
+    --surface-2: #F1ECE3;
+    --border: #E7DFD2;
+    --text: #2E2A24;
+    --text-muted: #8A8175;
+    --accent: #4C63E0;
+    --accent-bg: #EAEDFB;
+    --danger: #E24B4A;
+    --danger-bg: #FCEAEA;
+    --purple: #8B5CF6; --purple-bg:#F1EBFE;
+    --teal: #14B8A6; --teal-bg:#E6F8F6;
+    --coral: #FB7185; --coral-bg:#FEEBED;
+    --pink: #EC4899; --pink-bg:#FDEAF4;
+    --gray: #6B7280; --gray-bg:#EFF0F2;
+    --blue: #3B82F6; --blue-bg:#EAF1FE;
+    --amber: #F59E0B; --amber-bg:#FEF3E1;
+    --radius: 16px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:'Inter',system-ui,sans-serif; font-size:15px;
+    padding:20px; max-width:720px; margin:0 auto;
+  }
+  h1{
+    font-family:'Quicksand',sans-serif; font-weight:700; font-size:26px;
+    margin:8px 0 20px;
+  }
+  button, input, select, textarea{
+    font-family:inherit; font-size:14px; border-radius:10px;
+    border:1px solid var(--border); background:var(--surface);
+    color:var(--text); padding:8px 10px;
+  }
+  button{ cursor:pointer; border:1px solid var(--border); }
+  button:hover{ background:var(--surface-2); }
+  #tabbar{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:18px; }
+  #tabbar button{ font-family:'Quicksand',sans-serif; font-weight:600; padding:8px 16px; border-radius:20px; }
+  #tabbar button.active{ background:var(--accent-bg); color:var(--accent); border-color:var(--accent); }
+  .card{ background:var(--surface); border-radius:var(--radius); padding:16px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .muted{ color:var(--text-muted); }
+  .pill{ font-size:11px; padding:2px 9px; border-radius:20px; display:inline-block; }
+  .dot{ width:6px; height:6px; border-radius:50%; display:inline-block; flex-shrink:0; }
+  .icon-badge{ width:26px; height:26px; border-radius:8px; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:13px; }
+</style>
+</head>
+<body>
+<h1>Contract Dashboard</h1>
+<div id="tabbar"></div>
+<div id="panels"></div>
+
+<script>
+(function(){
+  var STORAGE_KEY = 'contract-dashboard-data';
+  var TAG_COLOR = {c1:'purple', c2:'teal', c3:'coral', c4:'pink', personal:'gray'};
+  var TYPE_META = {
+    meeting: {emoji:'📅', ramp:'blue', label:'Meeting'},
+    task: {emoji:'✅', ramp:'teal', label:'Task'},
+    reminder: {emoji:'🔔', ramp:'amber', label:'Reminder'},
+    project: {emoji:'💼', ramp:'purple', label:'Project'}
+  };
+  var RECUR_LABEL = {none:'One-time', weekly:'Weekly', biweekly:'Every 2 weeks', monthly:'Monthly'};
+  var PRIORITY_COLOR = {high:'#E24B4A', medium:'#EF9F27', low:'#639922'};
+  var PRIORITY_LABEL = {high:'High', medium:'Medium', low:'Low'};
+  var PRIORITY_WEIGHT = {high:3, medium:2, low:1};
+  var STATUS_CYCLE = ['not_started','in_progress','in_qa','ready_for_launch'];
+  var STATUS_LABEL = {not_started:'Not started', in_progress:'In progress', in_qa:'In QA', ready_for_launch:'Ready for launch'};
+  var WORK_HOURS_PER_DAY = 6;
+  var LEGACY_NAME_FIX = {c1:'Contract 1', c2:'Contract 2', c3:'Contract 3', c4:'Contract 4'};
+  var NEW_NAME = {c1:'Contract A', c2:'Contract B', c3:'Contract C', c4:'Contract D'};
+
+  var defaultData = {
+    tabs: [
+      {id:'c1', name:'Contract A', items:[]},
+      {id:'c2', name:'Contract B', items:[]},
+      {id:'c3', name:'Contract C', items:[]},
+      {id:'c4', name:'Contract D', items:[]},
+      {id:'personal', name:'Personal', items:[]}
+    ],
+    active: 'overview',
+    overviewMode: 'rolling',
+    selectedDay: null
+  };
+  var data = null;
+  var workloadMap = {};
+
+  function uid(){ return Math.random().toString(36).slice(2,10); }
+  function pad(n){ return n < 10 ? '0'+n : ''+n; }
+  function toISO(d){ return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()); }
+  function todayISO(){ return toISO(new Date()); }
+  function parseISO(s){ var p = s.split('-'); return new Date(parseInt(p[0]),parseInt(p[1])-1,parseInt(p[2])); }
+  function addDays(d, n){ var r = new Date(d); r.setDate(r.getDate()+n); return r; }
+  function daysBetween(a, b){ return Math.round((parseISO(b) - parseISO(a)) / 86400000); }
+  function fmtDayShort(iso){ var d = parseISO(iso); return d.toLocaleDateString(undefined, {weekday:'short'}); }
+  function fmtDayFull(iso){ var d = parseISO(iso); return d.toLocaleDateString(undefined, {weekday:'long', month:'short', day:'numeric'}); }
+  function fmtTime12(hhmm){
+    if(!hhmm) return '';
+    var parts = hhmm.split(':'); var h = parseInt(parts[0]), m = parts[1];
+    var ap = h >= 12 ? 'PM' : 'AM'; var h12 = h % 12; if(h12 === 0) h12 = 12;
+    return h12 + ':' + m + ' ' + ap;
+  }
+  function addMinutesToTime(hhmm, mins){
+    var parts = hhmm.split(':');
+    var total = parseInt(parts[0])*60 + parseInt(parts[1]) + (mins||0);
+    total = ((total % 1440) + 1440) % 1440;
+    return pad(Math.floor(total/60)) + ':' + pad(total % 60);
+  }
+  function fmtDuration(mins){
+    if(!mins) return '';
+    var h = Math.floor(mins/60), m = mins % 60;
+    if(h && m) return h + 'h ' + m + 'm';
+    if(h) return h + 'h';
+    return m + 'm';
+  }
+
+  function load(){
+    try{
+      var raw = localStorage.getItem(STORAGE_KEY);
+      data = raw ? JSON.parse(raw) : JSON.parse(JSON.stringify(defaultData));
+    }catch(e){ data = JSON.parse(JSON.stringify(defaultData)); }
+    if(!data.overviewMode) data.overviewMode = 'rolling';
+    if(!data.selectedDay) data.selectedDay = todayISO();
+    data.tabs.forEach(function(t){
+      if(LEGACY_NAME_FIX[t.id] && t.name === LEGACY_NAME_FIX[t.id]) t.name = NEW_NAME[t.id];
+    });
+    render();
+  }
+  function save(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }catch(e){} }
+  function tabById(id){ return data.tabs.find(function(t){ return t.id === id; }); }
+
+  function occurrencesInRange(item, startISO, endISO){
+    if(!item.date) return [];
+    var out = []; var start = parseISO(startISO), end = parseISO(endISO);
+    if(item.recurrence === 'none' || !item.recurrence){
+      if(item.date >= startISO && item.date <= endISO) out.push(item.date);
+      return out;
+    }
+    var cursor = parseISO(item.date); var guard = 0;
+    while(cursor <= end && guard < 200){
+      guard++;
+      if(cursor >= start && cursor <= end) out.push(toISO(cursor));
+      if(item.recurrence === 'weekly') cursor = addDays(cursor, 7);
+      else if(item.recurrence === 'biweekly') cursor = addDays(cursor, 14);
+      else if(item.recurrence === 'monthly'){ var n = new Date(cursor); n.setMonth(n.getMonth()+1); cursor = n; }
+      else break;
+    }
+    return out;
+  }
+  function nextOccurrenceOnOrAfter(item, fromISO){
+    if(!item.date) return null;
+    if(item.recurrence === 'none' || !item.recurrence) return item.date >= fromISO ? item.date : null;
+    var cursor = parseISO(item.date); var guard = 0;
+    while(guard < 400){
+      guard++; var iso = toISO(cursor);
+      if(iso >= fromISO) return iso;
+      if(item.recurrence === 'weekly') cursor = addDays(cursor, 7);
+      else if(item.recurrence === 'biweekly') cursor = addDays(cursor, 14);
+      else { var n = new Date(cursor); n.setMonth(n.getMonth()+1); cursor = n; }
+    }
+    return null;
+  }
+  function isOccurrenceDone(item, iso){
+    if(item.recurrence === 'none' || !item.recurrence) return !!item.done;
+    return (item.completedDates||[]).indexOf(iso) !== -1;
+  }
+  function toggleOccurrenceDone(item, iso){
+    if(item.recurrence === 'none' || !item.recurrence){ item.done = !item.done; }
+    else {
+      item.completedDates = item.completedDates || [];
+      var idx = item.completedDates.indexOf(iso);
+      if(idx === -1) item.completedDates.push(iso); else item.completedDates.splice(idx,1);
+    }
+  }
+  function allItemsWithTab(){
+    var out = [];
+    data.tabs.forEach(function(tab){ tab.items.forEach(function(item){ out.push({item:item, tab:tab}); }); });
+    return out;
+  }
+  function computeWorkloadMap(){
+    var today = todayISO();
+    var floating = 0;
+    var dated = [];
+    allItemsWithTab().forEach(function(pair){
+      var item = pair.item;
+      if(item.type === 'meeting') return;
+      if(item.recurrence && item.recurrence !== 'none') return;
+      if(item.type === 'project' && item.status === 'ready_for_launch') return;
+      if(item.type !== 'project' && item.done) return;
+      var hrs = (item.estimateMinutes || 30) / 60;
+      if(!item.date) floating += hrs;
+      else dated.push({item:item, hrs:hrs, due: item.date < today ? today : item.date});
+    });
+    dated.sort(function(a,b){ return a.due < b.due ? -1 : a.due > b.due ? 1 : 0; });
+    var cumulative = floating;
+    var map = {};
+    dated.forEach(function(d){
+      cumulative += d.hrs;
+      var daysUntil = Math.max(daysBetween(today, d.due), 0);
+      var availableHours = (daysUntil + 1) * WORK_HOURS_PER_DAY;
+      map[d.item.id] = cumulative >= availableHours;
+    });
+    return map;
+  }
+  function needsStartNow(item){
+    return item.type === 'project' && item.status === 'not_started' && !!workloadMap[item.id];
+  }
+
+  function render(){
+    workloadMap = computeWorkloadMap();
+    renderTabbar();
+    var panels = document.getElementById('panels');
+    panels.innerHTML = '';
+    if(data.active === 'overview') panels.appendChild(buildOverview());
+    else { var tab = tabById(data.active); if(tab) panels.appendChild(buildTabPanel(tab)); }
+  }
+  function renderTabbar(){
+    var tabbar = document.getElementById('tabbar'); tabbar.innerHTML = '';
+    var entries = [{id:'overview', name:'Overview'}].concat(data.tabs.map(function(t){return {id:t.id, name:t.name};}));
+    entries.forEach(function(e){
+      var btn = document.createElement('button');
+      btn.textContent = e.name;
+      if(e.id === data.active) btn.className = 'active';
+      btn.onclick = function(){ data.active = e.id; render(); };
+      tabbar.appendChild(btn);
+    });
+  }
+  function escapeHtml(s){ var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function escapeRegex(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  function classifySegment(seg){
+    var s = seg.trim();
+    if(!s) return null;
+    var lower = s.toLowerCase();
+
+    for(var ti=0; ti<data.tabs.length; ti++){
+      var tab = data.tabs[ti];
+      if(lower === tab.name.toLowerCase() || lower.indexOf(tab.name.toLowerCase()) !== -1) return {kind:'tag', value: tab.id};
+    }
+    if(lower === 'personal'){ var p = data.tabs.find(function(t){return t.id==='personal';}); if(p) return {kind:'tag', value:'personal'}; }
+
+    var typeMatch = lower.match(/\b(meeting|task|reminder|project)\b/);
+    if(typeMatch && lower.replace(typeMatch[0],'').trim() === '') return {kind:'type', value: typeMatch[1]};
+
+    if(/^notes?\b/.test(lower)){
+      var noteText = s.replace(/^notes?\s*[:\-]?\s*/i, '');
+      return {kind:'notes', value: noteText};
+    }
+
+    if(/\btoday\b/.test(lower)) return {kind:'date', value: todayISO()};
+    if(/\btomorrow\b/.test(lower)) return {kind:'date', value: toISO(addDays(new Date(),1))};
+    var dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    for(var i=0;i<dayNames.length;i++){
+      if(new RegExp('\\b' + dayNames[i] + '\\b').test(lower)){
+        var now = new Date(); var diff = (i - now.getDay() + 7) % 7; if(diff === 0) diff = 7;
+        return {kind:'date', value: toISO(addDays(now, diff))};
+      }
+    }
+
+    var timeMatch = lower.match(/^\s*(\d{1,2})(:(\d{2}))?\s*(am|pm)\s*$/);
+    if(timeMatch){
+      var h = parseInt(timeMatch[1]); var m = timeMatch[3] ? parseInt(timeMatch[3]) : 0;
+      var ap = timeMatch[4];
+      if(ap === 'pm' && h !== 12) h += 12; if(ap === 'am' && h === 12) h = 0;
+      return {kind:'time', value: pad(h) + ':' + pad(m)};
+    }
+
+    var durMatch = lower.match(/^\s*(\d+(\.\d+)?)\s*h(ours?)?\s*$/);
+    if(durMatch) return {kind:'duration', value: Math.round(parseFloat(durMatch[1])*60)};
+    var durM = lower.match(/^\s*(\d+)\s*m(in(utes?)?)?\s*$/);
+    if(durM) return {kind:'duration', value: parseInt(durM[1])};
+
+    if(/^(high|medium|low)$/.test(lower)) return {kind:'priority', value: lower};
+
+    if(/^due$/.test(lower)) return null;
+    return {kind:'title', value: s.replace(/^due\s+/i,'')};
+  }
+
+  function parseQuickAdd(raw){
+    var segments = raw.split(',');
+    var result = {tag:null, type:null, date:null, startTime:null, estimateMinutes:null, priority:'medium', notes:'', title:''};
+    var titleParts = [];
+    var notesParts = [];
+    var notesStarted = false;
+    segments.forEach(function(seg){
+      var c = classifySegment(seg);
+      if(!c) return;
+      if(notesStarted){ notesParts.push(c.kind === 'notes' ? c.value : seg.trim()); return; }
+      if(c.kind === 'tag') result.tag = c.value;
+      else if(c.kind === 'type') result.type = c.value;
+      else if(c.kind === 'date') result.date = c.value;
+      else if(c.kind === 'time') result.startTime = c.value;
+      else if(c.kind === 'duration') result.estimateMinutes = c.value;
+      else if(c.kind === 'priority') result.priority = c.value;
+      else if(c.kind === 'notes'){ notesStarted = true; if(c.value) notesParts.push(c.value); }
+      else if(c.kind === 'title') titleParts.push(c.value);
+    });
+    result.title = titleParts.join(', ').trim();
+    result.notes = notesParts.join(', ').trim();
+    if(!result.type) result.type = result.startTime ? 'meeting' : 'task';
+    return result;
+  }
+
+  var TEMPLATE_LINE = 'Contract A/B/C/D or Personal, Title, due <day>, <time \u2014 meetings only>, <hours>h, priority, notes <text>';
+  var TEMPLATE_EXAMPLE = 'e.g. "Contract B, Client kickoff call, due tomorrow, 10am, 30m, high, notes bring the deck"';
+
+  function buildQuickAddHint(){
+    var box = document.createElement('div');
+    box.style.cssText = 'font-size:11px; color:var(--text-muted); margin:6px 0 0; line-height:1.5;';
+    var l1 = document.createElement('p'); l1.style.margin = '0'; l1.textContent = 'Format: ' + TEMPLATE_LINE;
+    var l2 = document.createElement('p'); l2.style.margin = '0'; l2.textContent = TEMPLATE_EXAMPLE;
+    var l3 = document.createElement('p'); l3.style.margin = '0'; l3.textContent = 'Every field is optional except the title. Include a time and it becomes a meeting automatically. Say "comma" between fields when using voice dictation.';
+    box.appendChild(l1); box.appendChild(l2); box.appendChild(l3);
+    return box;
+  }
+
+  function buildOverview(){
+    var wrap = document.createElement('div');
+    var today = todayISO();
+
+    var qaCard = document.createElement('div'); qaCard.className = 'card';
+    var qaRow = document.createElement('div');
+    qaRow.style.cssText = 'display:flex; gap:8px;';
+    var qaInput = document.createElement('input');
+    qaInput.type = 'text';
+    qaInput.placeholder = 'Contract B, Client kickoff call, due tomorrow, 10am, 30m, high';
+    qaInput.style.cssText = 'flex:1;';
+    var qaBtn = document.createElement('button');
+    qaBtn.textContent = '+ Add';
+    var qaErr = document.createElement('p');
+    qaErr.style.cssText = 'font-size:12px; color:var(--danger); margin:6px 0 0; display:none;';
+    function submitQuick(){
+      var parsed = parseQuickAdd(qaInput.value);
+      if(!parsed.title){ qaErr.textContent = 'Add a short title'; qaErr.style.display = 'block'; return; }
+      var tagId = parsed.tag || (data.active !== 'overview' ? data.active : data.tabs[0].id);
+      var tab = tabById(tagId) || data.tabs[0];
+      tab.items.push({
+        id: uid(), type: parsed.type, title: parsed.title, date: parsed.date || '',
+        startTime: parsed.type === 'meeting' ? (parsed.startTime || '') : '',
+        estimateMinutes: parsed.estimateMinutes, recurrence: 'none', priority: parsed.priority,
+        status: parsed.type === 'project' ? 'not_started' : null, notes: parsed.notes || '', done: false, completedDates: []
+      });
+      qaInput.value = ''; qaErr.style.display = 'none';
+      save(); render();
+    }
+    qaBtn.onclick = submitQuick;
+    qaInput.addEventListener('keydown', function(e){ if(e.key === 'Enter') submitQuick(); });
+    qaRow.appendChild(qaInput); qaRow.appendChild(qaBtn);
+    qaCard.appendChild(qaRow); qaCard.appendChild(qaErr);
+    qaCard.appendChild(buildQuickAddHint());
+    wrap.appendChild(qaCard);
+
+    var soonEnd = toISO(addDays(new Date(),3));
+    var dueSoon = [];
+    allItemsWithTab().forEach(function(pair){
+      if(pair.item.type !== 'project') return;
+      var next = nextOccurrenceOnOrAfter(pair.item, today);
+      if(next && next <= soonEnd) dueSoon.push({item:pair.item, tab:pair.tab, due:next});
+    });
+    dueSoon.sort(function(a,b){ return a.due < b.due ? -1 : 1; });
+    if(dueSoon.length){
+      var callout = document.createElement('div');
+      callout.style.cssText = 'background:var(--danger-bg); border-radius:var(--radius); padding:14px 16px; margin-bottom:16px;';
+      var ch = document.createElement('p');
+      ch.style.cssText = 'margin:0 0 6px; font-size:13px; font-weight:600; color:var(--danger);';
+      ch.textContent = '⚠️ Due within 3 days';
+      callout.appendChild(ch);
+      dueSoon.forEach(function(d){
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex; justify-content:space-between; font-size:13px; color:var(--danger); padding:2px 0;';
+        row.innerHTML = '<span>' + escapeHtml(d.item.title) + ' — ' + escapeHtml(d.tab.name) + '</span><span>' + fmtDayShort(d.due) + '</span>';
+        callout.appendChild(row);
+      });
+      wrap.appendChild(callout);
+    }
+
+    wrap.appendChild(buildSuggestedOrder());
+
+    var modeRow = document.createElement('div');
+    modeRow.style.cssText = 'display:flex; gap:6px; margin-bottom:10px;';
+    [['rolling','Next 7 days'],['week','This week']].forEach(function(p){
+      var b = document.createElement('button');
+      b.textContent = p[1]; b.style.fontSize = '12px'; b.style.padding = '5px 12px';
+      if(data.overviewMode === p[0]){ b.style.background = 'var(--surface-2)'; b.style.borderColor = 'var(--text-muted)'; }
+      b.onclick = function(){
+        data.overviewMode = p[0];
+        var now2 = new Date();
+        if(p[0]==='week'){ var dow=now2.getDay(); var off = dow===0?-6:1-dow; data.selectedDay = toISO(addDays(now2, Math.max(off,0))); }
+        else data.selectedDay = today;
+        save(); render();
+      };
+      modeRow.appendChild(b);
+    });
+    wrap.appendChild(modeRow);
+
+    var rangeStart;
+    if(data.overviewMode === 'week'){ var now = new Date(); var dow = now.getDay(); var mondayOffset = dow === 0 ? -6 : 1 - dow; rangeStart = addDays(now, mondayOffset); }
+    else rangeStart = new Date();
+
+    var strip = document.createElement('div');
+    strip.style.cssText = 'display:grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap:6px; margin-bottom:16px;';
+    var dayIsos = [];
+    for(var i=0;i<7;i++){ var d = addDays(rangeStart, i); var iso = toISO(d); dayIsos.push(iso); strip.appendChild(buildDayCard(iso, iso === today)); }
+    if(dayIsos.indexOf(data.selectedDay) === -1) data.selectedDay = dayIsos[0];
+    wrap.appendChild(strip);
+
+    var agendaCard = document.createElement('div'); agendaCard.className = 'card';
+    agendaCard.appendChild(buildDayAgenda(data.selectedDay, data.selectedDay === today));
+    wrap.appendChild(agendaCard);
+    return wrap;
+  }
+
+  function buildSuggestedOrder(){
+    var box = document.createElement('div');
+    var today = todayISO();
+    var candidates = [];
+    allItemsWithTab().forEach(function(pair){
+      var item = pair.item;
+      if(item.type !== 'project' && item.type !== 'task') return;
+      if(item.type === 'project' && item.status === 'ready_for_launch') return;
+      if(item.recurrence === 'none' || !item.recurrence){ if(item.done) return; }
+      var next = nextOccurrenceOnOrAfter(item, today);
+      var daysUntil = next ? daysBetween(today, next) : 999;
+      var urgent = needsStartNow(item);
+      var score = (urgent ? 1000 : 0) + (PRIORITY_WEIGHT[item.priority]||2)*100 - Math.min(daysUntil, 90);
+      candidates.push({item:item, tab:pair.tab, due:next, urgent:urgent, score:score});
+    });
+    if(!candidates.length) return box;
+    candidates.sort(function(a,b){ return b.score - a.score; });
+    var top = candidates.slice(0,6);
+    var label = document.createElement('p');
+    label.style.cssText = 'font-size:12px; font-weight:600; color:var(--text-muted); margin:0 0 6px;';
+    label.textContent = '✨ Suggested order — priority, due date, and current workload';
+    box.appendChild(label);
+    var list = document.createElement('div');
+    list.className = 'card';
+    list.style.padding = '4px 16px';
+    top.forEach(function(c, idx){
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:9px 0;' + (idx < top.length-1 ? ' border-bottom:0.5px solid var(--border);' : '');
+      var rank = document.createElement('span');
+      rank.className = 'muted';
+      rank.style.cssText = 'font-size:12px; width:14px; flex-shrink:0;';
+      rank.textContent = (idx+1) + '.';
+      row.appendChild(rank);
+      var pdot = document.createElement('span');
+      pdot.className = 'dot';
+      pdot.style.background = PRIORITY_COLOR[c.item.priority];
+      row.appendChild(pdot);
+      var mid = document.createElement('div');
+      mid.style.cssText = 'flex:1; min-width:0;';
+      var t = document.createElement('p');
+      t.style.cssText = 'margin:0; font-size:13px; font-weight:600;';
+      t.textContent = c.item.title;
+      mid.appendChild(t);
+      var sub = document.createElement('p');
+      sub.className = 'muted';
+      sub.style.cssText = 'margin:0; font-size:11px;';
+      var bits = [c.tab.name];
+      if(c.due) bits.push('due ' + fmtDayShort(c.due));
+      if(c.item.estimateMinutes) bits.push('~' + fmtDuration(c.item.estimateMinutes));
+      if(c.urgent) bits.push('start now');
+      sub.textContent = bits.join(' · ');
+      mid.appendChild(sub);
+      row.appendChild(mid);
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+    box.style.marginBottom = '16px';
+    return box;
+  }
+
+  function dayStats(iso){
+    var occ = [];
+    allItemsWithTab().forEach(function(pair){ occurrencesInRange(pair.item, iso, iso).forEach(function(){ occ.push(pair); }); });
+    var totalMin = 0;
+    occ.forEach(function(pair){ totalMin += pair.item.estimateMinutes || 0; });
+    return {occ:occ, totalMin:totalMin};
+  }
+
+  function buildDayCard(iso, isToday){
+    var stats = dayStats(iso);
+    var card = document.createElement('button');
+    var selected = iso === data.selectedDay;
+    card.style.cssText = 'display:flex; flex-direction:column; align-items:center; gap:4px; padding:10px 4px; border-radius:14px; background:' + (selected ? 'var(--accent-bg)' : 'var(--surface)') + '; border:' + (selected ? '2px solid var(--accent)' : '1px solid var(--border)') + ';';
+    var wk = document.createElement('span');
+    wk.style.cssText = 'font-size:11px; color:' + (selected ? 'var(--accent)' : 'var(--text-muted)') + ';';
+    wk.textContent = fmtDayShort(iso);
+    var num = document.createElement('span');
+    num.style.cssText = 'font-family:Quicksand,sans-serif; font-size:17px; font-weight:700; color:' + (isToday ? 'var(--accent)' : 'var(--text)') + ';';
+    num.textContent = parseISO(iso).getDate();
+    card.appendChild(wk); card.appendChild(num);
+    var dots = document.createElement('div');
+    dots.style.cssText = 'display:flex; gap:3px; min-height:6px; flex-wrap:wrap; justify-content:center;';
+    var seen = {};
+    stats.occ.slice(0,5).forEach(function(pair){
+      if(seen[pair.tab.id]) return; seen[pair.tab.id] = true;
+      var dot = document.createElement('span');
+      dot.style.cssText = 'width:5px; height:5px; border-radius:50%; background:var(--' + TAG_COLOR[pair.tab.id] + ');';
+      dots.appendChild(dot);
+    });
+    card.appendChild(dots);
+    if(stats.totalMin){
+      var tot = document.createElement('span');
+      tot.className = 'muted';
+      tot.style.fontSize = '10px';
+      tot.textContent = fmtDuration(stats.totalMin);
+      card.appendChild(tot);
+    }
+    card.onclick = function(){ data.selectedDay = iso; render(); };
+    return card;
+  }
+
+  function buildDayAgenda(iso, isToday){
+    var wrap = document.createElement('div');
+    var stats = dayStats(iso);
+    var headerRow = document.createElement('div');
+    headerRow.style.cssText = 'display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px;';
+    var h = document.createElement('p');
+    h.style.cssText = 'font-family:Quicksand,sans-serif; font-size:16px; font-weight:700; margin:0;';
+    h.textContent = fmtDayFull(iso) + (isToday ? ' · Today' : '');
+    headerRow.appendChild(h);
+    if(stats.totalMin){
+      var tot = document.createElement('span');
+      tot.className = 'muted';
+      tot.style.fontSize = '12px';
+      tot.textContent = fmtDuration(stats.totalMin) + ' scheduled';
+      headerRow.appendChild(tot);
+    }
+    wrap.appendChild(headerRow);
+    if(stats.occ.length === 0){
+      var empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.style.fontSize = '14px';
+      empty.textContent = 'Nothing scheduled.';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+    var timed = stats.occ.filter(function(p){ return p.item.startTime; });
+    var untimed = stats.occ.filter(function(p){ return !p.item.startTime; });
+    timed.sort(function(a,b){ return a.item.startTime < b.item.startTime ? -1 : 1; });
+    timed.forEach(function(pair){ wrap.appendChild(buildAgendaRow(pair.item, pair.tab, iso, true)); });
+    if(untimed.length){
+      var lbl = document.createElement('p');
+      lbl.className = 'muted';
+      lbl.style.cssText = 'font-size:11px; margin:14px 0 4px; text-transform:uppercase; letter-spacing:0.03em;';
+      lbl.textContent = 'Anytime';
+      wrap.appendChild(lbl);
+      untimed.forEach(function(pair){ wrap.appendChild(buildAgendaRow(pair.item, pair.tab, iso, false)); });
+    }
+    return wrap;
+  }
+
+  function buildAgendaRow(item, tab, iso, showTime){
+    var meta = TYPE_META[item.type];
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:0.5px solid var(--border);';
+    if(isOccurrenceDone(item, iso)) row.style.opacity = '0.5';
+    var pdot = document.createElement('span');
+    pdot.className = 'dot';
+    pdot.style.background = PRIORITY_COLOR[item.priority] || PRIORITY_COLOR.medium;
+    row.appendChild(pdot);
+    var cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = isOccurrenceDone(item, iso);
+    cb.onchange = function(){ toggleOccurrenceDone(item, iso); save(); render(); };
+    row.appendChild(cb);
+    var icon = document.createElement('span');
+    icon.className = 'icon-badge';
+    icon.style.background = 'var(--' + meta.ramp + '-bg)';
+    icon.textContent = meta.emoji;
+    row.appendChild(icon);
+    var mid = document.createElement('div');
+    mid.style.cssText = 'flex:1; min-width:0;';
+    var t = document.createElement('p');
+    t.style.cssText = 'margin:0; font-size:13px; font-weight:600; text-decoration:' + (isOccurrenceDone(item,iso) ? 'line-through' : 'none') + ';';
+    t.textContent = item.title;
+    mid.appendChild(t);
+    var subBits = [];
+    if(showTime && item.startTime){
+      var end = item.estimateMinutes ? addMinutesToTime(item.startTime, item.estimateMinutes) : null;
+      subBits.push(fmtTime12(item.startTime) + (end ? '–' + fmtTime12(end) : ''));
+    } else if(item.estimateMinutes){ subBits.push('~' + fmtDuration(item.estimateMinutes)); }
+    if(item.type === 'project' && item.status) subBits.push(STATUS_LABEL[item.status]);
+    if(item.notes) subBits.push('has notes');
+    if(subBits.length){
+      var sub = document.createElement('p');
+      sub.className = 'muted';
+      sub.style.cssText = 'margin:0; font-size:11px;';
+      sub.textContent = subBits.join(' · ');
+      mid.appendChild(sub);
+    }
+    row.appendChild(mid);
+    var tagB = document.createElement('span');
+    tagB.className = 'pill';
+    tagB.style.background = 'var(--' + TAG_COLOR[tab.id] + '-bg)';
+    tagB.style.color = 'var(--' + TAG_COLOR[tab.id] + ')';
+    tagB.textContent = tab.name;
+    row.appendChild(tagB);
+    return row;
+  }
+
+  function buildTabPanel(tab){
+    var wrap = document.createElement('div');
+    var nameInput = document.createElement('input');
+    nameInput.type = 'text'; nameInput.value = tab.name;
+    nameInput.style.cssText = 'font-family:Quicksand,sans-serif; font-size:16px; font-weight:700; width:220px; margin-bottom:16px; border:none; background:transparent; padding:4px 0;';
+    nameInput.addEventListener('change', function(){ tab.name = nameInput.value.trim() || tab.name; save(); render(); });
+    wrap.appendChild(nameInput);
+
+    var qaCard = document.createElement('div'); qaCard.className = 'card';
+    var qaRow = document.createElement('div');
+    qaRow.style.cssText = 'display:flex; gap:8px;';
+    var qaInput = document.createElement('input');
+    qaInput.type = 'text'; qaInput.placeholder = 'Client kickoff call, due tomorrow, 10am, 30m, high';
+    qaInput.style.cssText = 'flex:1;';
+    var qaBtn = document.createElement('button');
+    qaBtn.textContent = '+ Add';
+    qaBtn.onclick = function(){
+      var parsed = parseQuickAdd(qaInput.value);
+      if(!parsed.title) return;
+      tab.items.push({
+        id: uid(), type: parsed.type, title: parsed.title, date: parsed.date || '',
+        startTime: parsed.type === 'meeting' ? (parsed.startTime || '') : '',
+        estimateMinutes: parsed.estimateMinutes, recurrence: 'none', priority: parsed.priority,
+        status: parsed.type === 'project' ? 'not_started' : null, notes: parsed.notes || '', done: false, completedDates: []
+      });
+      qaInput.value = ''; save(); render();
+    };
+    qaInput.addEventListener('keydown', function(e){ if(e.key === 'Enter') qaBtn.onclick(); });
+    qaRow.appendChild(qaInput); qaRow.appendChild(qaBtn);
+    qaCard.appendChild(qaRow);
+    qaCard.appendChild(buildQuickAddHint());
+    wrap.appendChild(qaCard);
+
+    var detailsToggle = document.createElement('button');
+    detailsToggle.textContent = 'Full form (recurring, exact time, hours, notes)';
+    detailsToggle.style.cssText = 'font-size:12px; padding:6px 12px; margin-bottom:16px;';
+    var detailsBox = document.createElement('div');
+    detailsBox.className = 'card';
+    detailsBox.style.display = 'none';
+    detailsToggle.onclick = function(){ detailsBox.style.display = detailsBox.style.display === 'none' ? 'block' : 'none'; };
+    wrap.appendChild(detailsToggle);
+
+    var typeSel = document.createElement('select');
+    Object.keys(TYPE_META).forEach(function(t){ var o=document.createElement('option'); o.value=t; o.textContent=TYPE_META[t].label; typeSel.appendChild(o); });
+    var titleInput = document.createElement('input'); titleInput.type = 'text'; titleInput.placeholder = 'Title';
+    var f1 = document.createElement('div'); f1.style.cssText = 'display:grid; grid-template-columns:110px minmax(0,1fr); gap:8px; margin-bottom:8px;';
+    f1.appendChild(typeSel); f1.appendChild(titleInput);
+    var dateInput = document.createElement('input'); dateInput.type = 'date';
+    var timeInput = document.createElement('input'); timeInput.type = 'time'; timeInput.title = 'Start time (meetings)';
+    var hoursInput = document.createElement('input'); hoursInput.type = 'number'; hoursInput.min='0'; hoursInput.step='0.25'; hoursInput.placeholder = 'Hours';
+    var recurSel = document.createElement('select');
+    Object.keys(RECUR_LABEL).forEach(function(r){ var o=document.createElement('option'); o.value=r; o.textContent=RECUR_LABEL[r]; recurSel.appendChild(o); });
+    var f2 = document.createElement('div'); f2.style.cssText = 'display:grid; grid-template-columns:130px 100px 90px 130px; gap:8px; margin-bottom:8px;';
+    f2.appendChild(dateInput); f2.appendChild(timeInput); f2.appendChild(hoursInput); f2.appendChild(recurSel);
+    var prSel = document.createElement('select');
+    Object.keys(PRIORITY_LABEL).forEach(function(p){ var o=document.createElement('option'); o.value=p; o.textContent=PRIORITY_LABEL[p]; prSel.appendChild(o); });
+    prSel.value = 'medium';
+    var f3 = document.createElement('div'); f3.style.cssText = 'display:flex; gap:8px; align-items:center; margin-bottom:8px;';
+    var prLabel = document.createElement('span'); prLabel.className='muted'; prLabel.style.fontSize='12px'; prLabel.textContent = 'Priority';
+    f3.appendChild(prLabel); f3.appendChild(prSel);
+    var notesInput = document.createElement('textarea');
+    notesInput.placeholder = 'Notes (optional)';
+    notesInput.style.cssText = 'width:100%; min-height:44px; font-size:13px; resize:vertical; margin-bottom:8px;';
+    var addBtn = document.createElement('button');
+    addBtn.textContent = '+ Add item';
+    addBtn.onclick = function(){
+      if(!titleInput.value.trim()) return;
+      tab.items.push({
+        id: uid(), type: typeSel.value, title: titleInput.value.trim(),
+        date: dateInput.value, startTime: typeSel.value === 'meeting' ? timeInput.value : '',
+        estimateMinutes: hoursInput.value ? Math.round(parseFloat(hoursInput.value)*60) : null,
+        recurrence: recurSel.value, priority: prSel.value,
+        status: typeSel.value === 'project' ? 'not_started' : null,
+        notes: notesInput.value.trim(), done: false, completedDates: []
+      });
+      titleInput.value=''; dateInput.value=''; timeInput.value=''; hoursInput.value=''; recurSel.value='none'; prSel.value='medium'; notesInput.value='';
+      save(); render();
+    };
+    detailsBox.appendChild(f1); detailsBox.appendChild(f2); detailsBox.appendChild(f3); detailsBox.appendChild(notesInput); detailsBox.appendChild(addBtn);
+    wrap.appendChild(detailsBox);
+
+    var items = tab.items.slice().sort(function(a,b){
+      var an = nextOccurrenceOnOrAfter(a, todayISO()) || a.date || '9999';
+      var bn = nextOccurrenceOnOrAfter(b, todayISO()) || b.date || '9999';
+      return an < bn ? -1 : an > bn ? 1 : 0;
+    });
+    var listCard = document.createElement('div'); listCard.className = 'card';
+    if(items.length === 0){
+      var empty = document.createElement('p'); empty.className='muted'; empty.style.fontSize = '14px'; empty.textContent = 'Nothing tracked yet.';
+      listCard.appendChild(empty);
+    }
+    items.forEach(function(item){ listCard.appendChild(buildItemRow(item, tab)); });
+    wrap.appendChild(listCard);
+    return wrap;
+  }
+
+  function buildItemRow(item, tab){
+    var meta = TYPE_META[item.type];
+    var box = document.createElement('div');
+    box.style.cssText = 'padding:10px 0; border-bottom:0.5px solid var(--border);';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap:wrap;';
+    var pdot = document.createElement('span');
+    pdot.className = 'dot';
+    pdot.style.background = PRIORITY_COLOR[item.priority] || PRIORITY_COLOR.medium;
+    row.appendChild(pdot);
+    var isRecurring = item.recurrence && item.recurrence !== 'none';
+    if(!isRecurring){
+      var cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!item.done;
+      cb.onchange = function(){ item.done = cb.checked; save(); render(); };
+      row.appendChild(cb);
+    } else { var spacer = document.createElement('span'); spacer.style.cssText = 'width:13px; flex-shrink:0;'; row.appendChild(spacer); }
+    var icon = document.createElement('span');
+    icon.className = 'icon-badge';
+    icon.style.background = 'var(--' + meta.ramp + '-bg)';
+    icon.textContent = meta.emoji;
+    row.appendChild(icon);
+    var textCol = document.createElement('div'); textCol.style.cssText = 'flex:1; min-width:120px;';
+    var titleP = document.createElement('p');
+    titleP.style.cssText = 'margin:0; font-size:14px; font-weight:600; text-decoration:' + (!isRecurring && item.done ? 'line-through' : 'none') + ';';
+    titleP.textContent = item.title;
+    var next = nextOccurrenceOnOrAfter(item, todayISO());
+    var bits = [meta.label];
+    if(isRecurring) bits.push(RECUR_LABEL[item.recurrence]);
+    if(item.startTime) bits.push(fmtTime12(item.startTime) + (item.estimateMinutes ? '–' + fmtTime12(addMinutesToTime(item.startTime, item.estimateMinutes)) : ''));
+    else if(item.estimateMinutes) bits.push('~' + fmtDuration(item.estimateMinutes));
+    bits.push(next ? 'next ' + fmtDayShort(next) : (item.date ? fmtDayShort(item.date) : 'no date'));
+    var subP = document.createElement('p'); subP.className='muted'; subP.style.cssText = 'margin:0; font-size:12px;'; subP.textContent = bits.join(' · ');
+    textCol.appendChild(titleP); textCol.appendChild(subP);
+    row.appendChild(textCol);
+    if(item.type === 'project'){
+      if(needsStartNow(item)){
+        var flag = document.createElement('span');
+        flag.className = 'pill';
+        flag.style.cssText = 'background:var(--danger-bg); color:var(--danger); font-weight:600;';
+        flag.textContent = 'Start now';
+        row.appendChild(flag);
+      }
+      var statusPill = document.createElement('button');
+      statusPill.className = 'pill';
+      statusPill.style.padding = '5px 12px';
+      statusPill.textContent = STATUS_LABEL[item.status || 'not_started'];
+      statusPill.onclick = function(){
+        var idx = STATUS_CYCLE.indexOf(item.status || 'not_started');
+        item.status = STATUS_CYCLE[(idx+1) % STATUS_CYCLE.length];
+        save(); render();
+      };
+      row.appendChild(statusPill);
+    }
+    var delBtn = document.createElement('button');
+    delBtn.setAttribute('aria-label','Delete item');
+    delBtn.textContent = '🗑️';
+    delBtn.style.padding = '6px 8px';
+    delBtn.onclick = function(){ tab.items = tab.items.filter(function(i){ return i.id !== item.id; }); save(); render(); };
+    row.appendChild(delBtn);
+    box.appendChild(row);
+
+    var notesWrap = document.createElement('div'); notesWrap.style.cssText = 'margin:6px 0 0 49px;';
+    var notesArea = document.createElement('textarea');
+    notesArea.placeholder = 'Notes...'; notesArea.value = item.notes || '';
+    notesArea.style.cssText = 'width:100%; min-height:36px; font-size:13px; resize:vertical;';
+    notesArea.addEventListener('change', function(){ item.notes = notesArea.value; save(); });
+    notesWrap.appendChild(notesArea);
+    box.appendChild(notesWrap);
+    return box;
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>
